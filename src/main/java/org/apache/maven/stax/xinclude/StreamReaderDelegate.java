@@ -24,6 +24,8 @@ import javax.xml.stream.Location;
 import javax.xml.stream.XMLStreamException;
 import javax.xml.stream.XMLStreamReader;
 
+import java.util.regex.Pattern;
+
 public abstract class StreamReaderDelegate implements XMLStreamReader {
 
     protected abstract XMLStreamReader getDelegate();
@@ -48,9 +50,49 @@ public abstract class StreamReaderDelegate implements XMLStreamReader {
         return getDelegate().getElementText();
     }
 
+    private static final String[] TYPES = new String[] {
+        "",
+        "START_ELEMENT",
+        "END_ELEMENT",
+        "PROCESSING_INSTRUCTION",
+        "CHARACTERS",
+        "COMMENT",
+        "SPACE",
+        "START_DOCUMENT",
+        "END_DOCUMENT",
+        "ENTITY_REFERENCE",
+        "ATTRIBUTE",
+        "DTD",
+        "CDATA",
+        "NAMESPACE",
+        "NOTATION_DECLARATION",
+        "ENTITY_DECLARATION"
+    };
+
+    private static final Pattern WHITESPACE_REGEX = Pattern.compile("[ \r\t\n]+");
+
+    public boolean isWhitespace() throws XMLStreamException {
+        if (getEventType() == CHARACTERS || getEventType() == CDATA) {
+            return WHITESPACE_REGEX.matcher(getText()).matches();
+        } else if (getEventType() == SPACE) {
+            return true;
+        } else {
+            throw new XMLStreamException("no content available to check for whitespaces");
+        }
+    }
+
     @Override
     public int nextTag() throws XMLStreamException {
-        return getDelegate().nextTag();
+        int eventType = next();
+        while (eventType == CHARACTERS && isWhitespace() // skip whitespace
+                || eventType == COMMENT) { // skip comments
+            eventType = next();
+        }
+        if (eventType != START_ELEMENT && eventType != END_ELEMENT) {
+            throw new XMLStreamException(
+                    "expected START_TAG or END_TAG not " + TYPES[getEventType()], getLocation(), null);
+        }
+        return eventType;
     }
 
     @Override
