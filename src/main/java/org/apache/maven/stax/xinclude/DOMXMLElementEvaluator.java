@@ -18,6 +18,7 @@
  */
 package org.apache.maven.stax.xinclude;
 
+import java.util.Map;
 import java.util.Objects;
 
 import com.ctc.wstx.dtd.DTDAttribute;
@@ -61,15 +62,17 @@ public class DOMXMLElementEvaluator extends XMLElementEvaluator<Element> {
         if (Objects.equals(attr, shorthand)) {
             return true;
         }
-        if (dtd != null && dtd.getElementMap() != null) {
-            DTDElement dtdElement =
-                    dtd.getElementMap().get(new PrefixedName(domElement.getPrefix(), domElement.getLocalName()));
-            if (dtdElement != null) {
-                DTDAttribute dtdAttribute = dtdElement.getIdAttribute();
-                if (dtdAttribute != null) {
-                    attr = domElement.getAttribute(dtdAttribute.getName().getLocalName());
-                    if (Objects.equals(attr, shorthand)) {
-                        return true;
+        if (dtd != null) {
+            Map<PrefixedName, DTDElement> map = dtd.getElementMap();
+            if (map != null) {
+                DTDElement dtdElement = map.get(new PrefixedName(domElement.getPrefix(), domElement.getLocalName()));
+                if (dtdElement != null) {
+                    DTDAttribute dtdAttribute = dtdElement.getIdAttribute();
+                    if (dtdAttribute != null) {
+                        attr = domElement.getAttribute(dtdAttribute.getName().getLocalName());
+                        if (Objects.equals(attr, shorthand)) {
+                            return true;
+                        }
                     }
                 }
             }
