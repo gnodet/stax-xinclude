@@ -61,7 +61,7 @@ public class DOMXMLElementEvaluator extends XMLElementEvaluator<Element> {
         if (Objects.equals(attr, shorthand)) {
             return true;
         }
-        if (dtd != null) {
+        if (dtd != null && dtd.getElementMap() != null) {
             DTDElement dtdElement =
                     dtd.getElementMap().get(new PrefixedName(domElement.getPrefix(), domElement.getLocalName()));
             if (dtdElement != null) {
