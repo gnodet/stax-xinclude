@@ -25,12 +25,15 @@ import javax.xml.stream.XMLEventReader;
 import javax.xml.stream.XMLEventWriter;
 import javax.xml.stream.XMLInputFactory;
 import javax.xml.stream.XMLOutputFactory;
+import javax.xml.stream.XMLResolver;
 import javax.xml.stream.XMLStreamException;
 import javax.xml.stream.XMLStreamReader;
 import javax.xml.stream.events.DTD;
 import javax.xml.stream.events.XMLEvent;
+import javax.xml.transform.Source;
 import javax.xml.transform.dom.DOMResult;
 import javax.xml.transform.dom.DOMSource;
+import javax.xml.transform.stream.StreamSource;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -40,6 +43,7 @@ import java.io.Reader;
 import java.io.StringReader;
 import java.io.StringWriter;
 import java.io.Writer;
+import java.net.MalformedURLException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.ArrayDeque;
@@ -52,6 +56,8 @@ import org.apache.maven.stax.xpointer.InvalidXPointerException;
 import org.apache.maven.stax.xpointer.XPointer;
 import org.codehaus.stax2.XMLInputFactory2;
 import org.codehaus.stax2.XMLStreamLocation2;
+import org.codehaus.stax2.io.Stax2Source;
+import org.codehaus.stax2.io.Stax2URLSource;
 import org.w3c.dom.Attr;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
@@ -61,36 +67,22 @@ import org.w3c.dom.Node;
 @SuppressWarnings("checkstyle:MissingSwitchDefault")
 public class XIncludeStreamReader extends StreamReaderDelegate {
 
+    private static final String XML_NAMESPACE = "http://www.w3.org/XML/1998/namespace";
     private static final String XINCLUDE_NAMESPACE = "http://www.w3.org/2001/XInclude";
     private static final String XINCLUDE_INCLUDE = "include";
     private static final String XINCLUDE_FALLBACK = "fallback";
 
     private final XMLInputFactory factory;
     private final XMLOutputFactory outputFactory;
-    private final UriLoader loader;
     private final Deque<EventContext> contextStack = new ArrayDeque<>();
     private final Deque<String> xmlLangs = new ArrayDeque<>();
     private final Deque<String> xmlBases = new ArrayDeque<>();
     private boolean firstElementInContext;
 
-    public interface UriLoader {
-        InputStream load(URI uri) throws IOException;
-    }
-
     public XIncludeStreamReader(
             XMLInputFactory factory, XMLOutputFactory outputFactory, String location, XMLStreamReader reader) {
-        this(factory, outputFactory, uri -> uri.toURL().openStream(), location, reader);
-    }
-
-    public XIncludeStreamReader(
-            XMLInputFactory factory,
-            XMLOutputFactory outputFactory,
-            UriLoader loader,
-            String location,
-            XMLStreamReader reader) {
         this.factory = factory;
         this.outputFactory = outputFactory;
-        this.loader = loader;
         if (!(Boolean) reader.getProperty(XMLInputFactory.IS_NAMESPACE_AWARE)) {
             throw new IllegalArgumentException("Namespace support should be enabled");
         }
@@ -184,18 +176,25 @@ public class XIncludeStreamReader extends StreamReaderDelegate {
             throw new XMLStreamException("invalid syntax for href: " + href, e);
         }
 
-        String currentLocation = contextStack.peek().getLocation();
-        URI location = URI.create(currentLocation).resolve(hrefUri);
-        InputStream input = null;
-        try {
-            input = loader.load(location);
-            if (input == null) {
-                resourceError = new IOException("Unable to locate resource: " + location);
-            }
-        } catch (IOException e) {
-            // will fallback
-            resourceError = e;
+        Source input;
+        String currentLocation = xmlBases.peek();
+        XMLResolver r = factory.getXMLResolver();
+        Object o = r != null ? r.resolveEntity(null, href, currentLocation, null) : null;
+        if (o == null) {
+            o = URI.create(currentLocation).resolve(hrefUri);
         }
+        if (o instanceof URI) {
+            try {
+                o = new Stax2URLSource(((URI) o).toURL());
+            } catch (MalformedURLException e) {
+                throw new XMLStreamException(e);
+            }
+        }
+        if (!(o instanceof Source)) {
+            throw new XMLStreamException(
+                    "Unsupported input of class " + o.getClass().getName());
+        }
+        input = (Source) o;
 
         boolean isXml = false;
         boolean isText = false;
@@ -212,14 +211,13 @@ public class XIncludeStreamReader extends StreamReaderDelegate {
             }
         }
 
-        EventContext current = contextStack.peek();
         boolean fallback = true;
         if (isXml) {
             boolean reportPrologWs = (boolean) factory.getProperty(XMLInputFactory2.P_REPORT_PROLOG_WHITESPACE);
             if (reportPrologWs) {
                 factory.setProperty(XMLInputFactory2.P_REPORT_PROLOG_WHITESPACE, false);
             }
-            XMLStreamReader reader = factory.createXMLStreamReader(location.toString(), input);
+            XMLStreamReader reader = factory.createXMLStreamReader(input);
             String pointer = xpointer != null ? xpointer : fragid;
             try {
                 Document doc = DocumentBuilderFactory.newInstance()
@@ -256,7 +254,7 @@ public class XIncludeStreamReader extends StreamReaderDelegate {
 
                     Element p = resNode;
                     while (p != null) {
-                        Attr attr = p.getAttributeNodeNS("http://www.w3.org/XML/1998/namespace", "lang");
+                        Attr attr = p.getAttributeNodeNS(XML_NAMESPACE, "lang");
                         if (attr != null) {
                             impLang = attr.getValue();
                             break;
@@ -265,15 +263,15 @@ public class XIncludeStreamReader extends StreamReaderDelegate {
                         p = np instanceof Element ? (Element) np : null;
                     }
                     if (!Objects.equals(curLang, impLang)) {
-                        resNode.setAttributeNS("http://www.w3.org/XML/1998/namespace", "xml:lang", impLang);
+                        resNode.setAttributeNS(XML_NAMESPACE, "xml:lang", impLang);
                     }
-                    resNode.setAttributeNS("http://www.w3.org/XML/1998/namespace", "xml:base", location.toString());
+                    resNode.setAttributeNS(XML_NAMESPACE, "xml:base", input.getSystemId());
 
                     NamedNodeMap attrs = node.getAttributes();
                     for (int i = 0; i < attrs.getLength(); i++) {
                         Attr att = (Attr) attrs.item(i);
                         String ns = att.getNamespaceURI();
-                        if (ns != null && !"http://www.w3.org/XML/1998/namespace".equals(ns)) {
+                        if (ns != null && !XML_NAMESPACE.equals(ns)) {
                             if ("http://www.w3.org/2001/XInclude/local-attributes".equals(ns)) {
                                 resNode.setAttribute(att.getLocalName(), att.getValue());
                             } else {
@@ -282,11 +280,11 @@ public class XIncludeStreamReader extends StreamReaderDelegate {
                         }
                     }
                     if (setXmlId != null) {
-                        resNode.setAttributeNS("http://www.w3.org/XML/1998/namespace", "xml:id", setXmlId);
+                        resNode.setAttributeNS(XML_NAMESPACE, "xml:id", setXmlId);
                     }
 
                     XMLStreamReader sr = factory.createXMLStreamReader(new DOMSource(resNode));
-                    pushContext(location.toString(), sr);
+                    pushContext(input.getSystemId(), sr);
                     fallback = false;
                 }
             } catch (InvalidXPointerException | ParserConfigurationException e) {
@@ -295,7 +293,26 @@ public class XIncludeStreamReader extends StreamReaderDelegate {
         } else if (isText) {
             try {
                 StringWriter sw = new StringWriter();
-                transferTo(new InputStreamReader(input, encoding != null ? encoding : "UTF-8"), sw);
+                Reader reader;
+                if (input instanceof StreamSource) {
+                    StreamSource ss = (StreamSource) input;
+                    reader = ss.getReader();
+                    if (reader == null) {
+                        InputStream is = ss.getInputStream();
+                        reader = new InputStreamReader(is, encoding != null ? encoding : "UTF-8");
+                    }
+                } else if (input instanceof Stax2Source) {
+                    Stax2Source ss = (Stax2Source) input;
+                    reader = ss.constructReader();
+                    if (reader == null) {
+                        InputStream is = ss.constructInputStream();
+                        reader = new InputStreamReader(is, encoding != null ? encoding : "UTF-8");
+                    }
+                } else {
+                    throw new XMLStreamException(
+                            "Unsupported source of class " + input.getClass().getName());
+                }
+                transferTo(reader, sw);
                 String include;
                 if (fragid != null) {
                     String scheme;
@@ -390,7 +407,7 @@ public class XIncludeStreamReader extends StreamReaderDelegate {
                         return XMLStreamLocation2.NOT_AVAILABLE;
                     }
                 };
-                pushContext(location.toString(), sr);
+                pushContext(input.getSystemId(), sr);
                 fallback = false;
             } catch (IOException e) {
                 resourceError = e;
@@ -414,7 +431,7 @@ public class XIncludeStreamReader extends StreamReaderDelegate {
                         sr.nextTag(); // the fallback
                         sr.next(); // next
                         sr = new FragmentReader(sr);
-                        pushContext("", sr);
+                        pushContext(currentLocation, sr);
                         break;
                     }
                 } else {

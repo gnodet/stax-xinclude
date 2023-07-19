@@ -21,6 +21,7 @@ package org.apache.maven.stax.xinclude;
 import javax.xml.stream.XMLEventReader;
 import javax.xml.stream.XMLEventWriter;
 import javax.xml.stream.XMLStreamReader;
+import javax.xml.transform.stream.StreamSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -29,6 +30,7 @@ import java.io.StringReader;
 import java.io.StringWriter;
 import java.io.UnsupportedEncodingException;
 import java.io.Writer;
+import java.net.URI;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
@@ -115,7 +117,7 @@ public class XIncludeTest {
                 + "</price-quote>";
         Map<String, String> includes = new HashMap<>();
         includes.put(
-                "price-list.dtd",
+                "http://www.example.com/price-list.dtd",
                 "<!ATTLIST item id ID #REQUIRED> " + "<!ATTLIST description id ID #REQUIRED> "
                         + "<!ATTLIST prices id ID #REQUIRED> ");
         includes.put(
@@ -316,15 +318,18 @@ public class XIncludeTest {
         WstxInputFactory factory = new WstxInputFactory();
         WstxOutputFactory outputFactory = new WstxOutputFactory();
         factory.setProperty(XMLInputFactory2.P_REPORT_PROLOG_WHITESPACE, true);
-        factory.setXMLResolver((publicID, systemID, baseURI, namespace) -> includes.get(systemID));
-        XIncludeStreamReader.UriLoader loader = location -> {
-            String inc = includes.get(location.toString());
-            return inc != null ? new ByteArrayInputStream(inc.getBytes()) : null;
-        };
+        factory.setXMLResolver((publicID, systemID, baseURI, namespace) -> {
+            String r = URI.create(baseURI).resolve(systemID).toString();
+            String text = includes.get(r);
+            if (text == null) {
+                return null;
+            }
+            return new StreamSource(new ByteArrayInputStream(text.getBytes()), r);
+        });
 
         XMLStreamReader reader = factory.createXMLStreamReader(new StringReader(input));
         XMLStreamReader xiReader =
-                new XIncludeStreamReader(factory, outputFactory, loader, "http://www.example.com/pom.xml", reader);
+                new XIncludeStreamReader(factory, outputFactory, "http://www.example.com/pom.xml", reader);
 
         XMLEventReader er = factory.createXMLEventReader(xiReader);
         StringWriter sw = new StringWriter();
